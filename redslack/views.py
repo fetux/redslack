@@ -71,12 +71,13 @@ def connect(params):
 
 def todo(params):
 
-    issues = redmine.issue.filter(status='In Progress')# if (issues not None) else redmine.issue.filter(assigned_to='me',status'closed',limit=3)
-    print issues
+    issues = redmine.issue.filter(assigned_to_id="me",status_id=2)
     if not issues:
-        return JSONResponse({
-            "text": "It seems there are not issues here."
-        })
+        issues = redmine.issue.filter(assigned_to_id="me",status_id='closed',limit=3)
+        if not issues:
+            return JSONResponse({
+                "text": "It seems there are not issues here."
+            })
     todo = []
     for issue in issues:
         todo.append({
@@ -128,11 +129,29 @@ def issue_show(pk):
     """
     issue = redmine.issue.get(pk)
     return JSONResponse({
-        "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nStatus: "+issue.status.name+"\nPriority: "+issue.priority.name+"\nEstimated hours: "+ (issue.estimated_hours if "estimated_hours" in issue else "-"),
+        "text": issue.tracker.name+"#"+str(issue.id),
         "attachments": [
             {
-                "title": "Description",
-                "text": issue.description
+
+                "title": issue.subject,
+                "text": issue.description,
+                "fields":[
+                    {
+                        "title": "Status",
+                        "value": issue.status.name,
+                        "short": True
+                    },
+                    {
+                        "title": "Priority",
+                        "value": issue.priority.name,
+                        "short": True
+                    },
+                    {
+                        "title": "Estimated hours",
+                        "value": (issue.estimated_hours if "estimated_hours" in issue else "-"),
+                        "short": True
+                    },
+                ]
             },
         ]
     })
@@ -172,7 +191,7 @@ def issue_set_status(pk, status):
         "attachments": [
             {
                 "title": "Available Issue Statuses",
-                "text": ", ".join([s.name+" "+s.id for s in statuses])
+                "text": ", ".join([s.name+" "+str(s.id) for s in statuses])
             }
         ]
     })
