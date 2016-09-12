@@ -1,22 +1,8 @@
-from rest_framework import status
+from django.db import IntegrityError
 from rest_framework.decorators import api_view
-from rest_framework.response import Response
-from django.http import HttpResponse
-from django.views.decorators.csrf import csrf_exempt
-from rest_framework.renderers import JSONRenderer
-from rest_framework.parsers import JSONParser
-from redmine import Redmine
+from redmine import *
 from models import User
-
-class JSONResponse(HttpResponse):
-    """
-    An HttpResponse that renders its content into JSON.
-    """
-    def __init__(self, data, **kwargs):
-        content = JSONRenderer().render(data)
-        kwargs['content_type'] = 'application/json'
-        super(JSONResponse, self).__init__(content, **kwargs)
-
+from utilities import *
 
 redmine = None
 
@@ -25,76 +11,99 @@ def router(request):
     """
     API entry point that routes outside world requests
     """
-    non_auth_commands = ['connect', 'help']
-    data = request._get_post()
-    params = data['text'].split()
-    command = params[0]
-    if command not in non_auth_commands:
-        try:
-            user = User.objects.get(slack_id=data['user_id'])
-        except Exception as e:
-            return JSONResponse({
-                "text": "You must first connect your slack user\nTry /redmine help"
-            })
-        global redmine
-        redmine = Redmine(user.redmine_url, key=user.redmine_key)
-
-    commands = {
-        "connect": connect,
-        "todo": todo,
-        "issue": issue,
-        "help": help,
-    }
-    if params[0] not in commands:
-        return JSONResponse({
-            "text": "Ups! "+params[0]+" : Command not found"
-        })
-    return commands[params[0]](data, params)
-
-
-def connect(data, params):
+    params = {}
+    for k,p in request.POST.iteritems():
+        params.update({k: p})
+    text = request.POST['text'].split()
     try:
-        User.objects.get(pk=data['user_id'])
+        params.update({'command': text.pop(0)})
+        params.update({'options': text})
+        non_auth_commands = ['connect', 'help']
+        if params['command'] not in non_auth_commands:
+            try:
+                user = User.objects.get(slack_id=params['user_id'])
+            except Exception as e:
+                return JSONResponse({
+                    "text": "You must first connect your slack user\nTry /redmine help"
+                })
+            global redmine
+            redmine = Redmine(user.redmine_url, key=user.redmine_key)
+        commands = {
+            "connect": connect,
+            "todo": todo,
+            "issue": issue,
+            "help": help,
+        }
+        if params['command'] not in commands:
+            return JSONResponse({
+                "text": "Ups! "+params['command']+" : Command not found"
+            })
+        return commands[params['command']](params)
+    except IndexError as e:
+        return help()
+
+print
+
+def connect(params):
+    try:
+        user = User.objects.get(pk=params['user_id'])
     except Exception as e:
         try:
-            redmine = Redmine(params[1], key=params[2])
+            redmine = Redmine(params['options'][0], key=params['options'][1])
             redmine.auth()
-        except Redmine.exceptions.AuthError as e:
+            user = User(slack_id=params['user_id'],redmine_url=params['options'][0], redmine_key=params['options'][1])
+            print user.save()
+            print user
+        except IntegrityError as e:
             return JSONResponse({
-                "text": "Ups! Authentication fails: Invalid credentials. Sorry..."
+            "text": "Ups! Redmine key "+params['options'][1]+" already connected to another Slack User. Sorry..."
             })
-        user = User(slack_id=data['user_id'],redmine_url=params[1], redmine_key=params[2])
-        user.save()
+        except AuthError as e:
+            return JSONResponse({
+            "text": "Ups! Authentication fails: Invalid credentials. Sorry..."
+            })
         return JSONResponse({
-            "text": "Authentication success! "+data['user_name']+" you are ready to work!\nTry /redmine help"
+            "text": "Authentication success! "+params['user_name']+" you are ready to work!\nTry /redmine help"
         })
     return JSONResponse({
-        "text": "User already connected. You are ready to work!\nTry \redmine help"
+        "text": "User already connected. You are ready to work!\nTry /redmine help"
     })
 
-def todo(data, params):
+def todo(params):
 
-    return JSONResponse(list(redmine.issue.get(1, include='children,journals,watchers,relations,attachments,changesets')))
-    # issues = []
-    # for issue in redmine.issue.filter(project_id='sml'):
-    #     issues.append({
-    #         "id": issue.id,
-    #         "subject": issue.subject,
-    #         "priority": issue.priority.name,
-    #         "tracker": issue.tracker.name,
-    #         "status": issue.status.name,
-    #         "hours": issue.estimated_hours if "estimated_hours" in dir(issue) else None,
-    #         "description": issue.description})
-    # return JSONResponse(issues)
+    issues = redmine.issue.filter(status='In Progress')# if (issues not None) else redmine.issue.filter(assigned_to='me',status'closed',limit=3)
+    print issues
+    if not issues:
+        return JSONResponse({
+            "text": "It seems there are not issues here."
+        })
+    todo = []
+    for issue in issues:
+        todo.append({
+            "id": issue.id,
+            "subject": issue.subject,
+            "priority": issue.priority.name,
+            "tracker": issue.tracker.name,
+            "status": issue.status.name,
+            "hours": issue.estimated_hours if "estimated_hours" in dir(issue) else None,
+            "description": issue.description})
+    return JSONResponse({
+        "text": "To-Do",
+        "attachments": todo
+    })
 
-def issue(data, params):
-    issue_id = params[1]
-    if not issue_id.isdigit():
+
+def issue(params):
+    # Extract issue_id should be fisrt element in options, and add it to params so we could send it easily to the following method
+    params.update({"issue_id": params['options'].pop(0)})
+    if not params['issue_id'].isdigit():
         return JSONResponse({
             "text": "Ups! Invalid Issue ID"
         })
-    if len(params) == 2:
-        return issue_show(data, params)
+    # If there no left options is just asking /redmine issue <id>
+    if not params['options']:
+        return issue_show(params['issue_id'])
+    # If there are more options, lets route them
     options = {
         "status": issue_status,
         "priority": issue_get_priority,
@@ -105,17 +114,18 @@ def issue(data, params):
         "comments": issue_comments,
         "time": issue_logtime
     }
-    if params[2] not in options:
+    # Extract following option and check if it is an option available
+    option = params['options'].pop(0)
+    if option not in options:
         return JSONResponse({
-            "text": "Ups! "+params[2]+" : Option not found.\n Try \redmine help"
+            "text": "Ups! "+option+" : Option not found.\n Try /redmine help"
         })
-    return options[params[2]](data, params)
+    return options[option](params)
 
-def issue_show(data, params):
+def issue_show(pk):
     """
     An JSONResponse that returns an Issue.
     """
-    pk = params[1]
     issue = redmine.issue.get(pk)
     return JSONResponse({
         "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nStatus: "+issue.status.name+"\nPriority: "+issue.priority.name+"\nEstimated hours: "+ (issue.estimated_hours if "estimated_hours" in issue else "-"),
@@ -127,14 +137,15 @@ def issue_show(data, params):
         ]
     })
 
-def issue_status(request, params):
+def issue_status(params):
     """
-    Routes the status command options
+    Routes the issue status command options
     """
-    try:
-        return issue_set_status(params[1], params[3])
-    except Exception as e:
-        return issue_get_status(params[1])
+    if not params['options']:
+        return issue_get_status(params['issue_id'])
+
+    return issue_set_status(params['issue_id'], params['options'][0])
+
 
 def issue_get_status(pk):
     """
@@ -161,7 +172,7 @@ def issue_set_status(pk, status):
         "attachments": [
             {
                 "title": "Available Issue Statuses",
-                "text": ", ".join([s.name for s in statuses])
+                "text": ", ".join([s.name+" "+s.id for s in statuses])
             }
         ]
     })
@@ -282,7 +293,7 @@ def issue_comments(request, params):
                 comment=" ".join(opt[4])
             except:
                 return JSONResponse({
-                    "text": "Comment text missing!\nTry \redmine help"
+                    "text": "Comment text missing!\nTry /redmine help"
                 })
             return issue_add_comment(pk, comment)
         elif opt=="last":
@@ -320,7 +331,7 @@ def issue_add_comment(pk, comment):
         "text": "Adding a comment is not implemented yet... Sorry! "
     })
 
-def issue_logtime(request, params):
+def issue_logtime(params):
     pk=params[1]
     try:
         if params[3] == "add" :
@@ -362,3 +373,74 @@ def issue_add_logtime(pk, hours, comment):
     return JSONResponse({
         "text": issue.tracker.name+"#"+str(issue.id)+ (" Time entry added") if time_entry else "couldn't add the time entry."
     })
+
+def help(params = None):
+    """
+    An JSONResponse that displays the command help
+    """
+    return JSONResponse({
+        "text": """*How to use: /redmine <command> [options]*
+
+        *Let you interact with your Redmine application.*
+
+        Available_commands:
+
+        */redmine connect <redmine-url> <user-key>*
+
+            This will connect your Slack account with your Redmine account.
+            <redmine-url> should be the URL of your Redmine application.
+            <user-key> should be your token that you can find it in 'My Account' at Redmine's
+
+        */redmine todo*
+
+            This will return what you have to do... According Redmine ;)
+
+        */redmine issue <id>*
+
+            This will return available information of an Issue
+
+        */redmine issue <id> status [status]*
+
+            This will return or set the status of an Issue.
+            e.g: `/redmine issue 5420 status` will return the status of Issue#5420
+            e.g: `/redmine issue 5420 status resolved` will set the status of Issue#5420 to `Resolved`
+
+        */redmine issue <id> priority*
+
+            This will return the priority of an Issue.
+
+        */redmine issue <id> assignee*
+
+            This will return the Assignee of an Issue
+
+        */redmine issue <id> target*
+
+            This will return the Target of an Issue.
+
+        */redmine issue <id> subtasks*
+
+            This will return the Subtasks of an Issue.
+
+        */redmine issue <id> related*
+
+            This will return the Related Issues of an Issue.
+
+        */redmine issue <id> comments*
+
+            This will return all the Comments of an Issue.
+
+        */redmine issue <id> comments last*
+
+            This will return the last Comment of an Issue.
+
+        */redmine issue <id> time*
+
+            This will return the logged hours in an Issue
+
+        */redmine issue <id> time add <hours> <comment>*
+
+            This will log the hours in the Issue with the comment specified.
+        """
+    })
+
+
