@@ -129,11 +129,11 @@ def issue_show(pk):
     """
     issue = redmine.issue.get(pk)
     return JSONResponse({
-        "text": issue.tracker.name+"#"+str(issue.id),
+        "text": "<http://redmine.smarterlith.net/issues/"+str(pk)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">",
         "attachments": [
             {
 
-                "title": issue.subject,
+                "title": "",
                 "text": issue.description,
                 "fields":[
                     {
