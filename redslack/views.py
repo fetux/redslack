@@ -1,3 +1,4 @@
+from django.utils import timezone
 from django.db import IntegrityError
 from rest_framework.decorators import api_view
 from redmine import *
@@ -28,6 +29,7 @@ def router(request):
                 })
             global redmine
             redmine = Redmine(user.redmine_url, key=user.redmine_key)
+            params.update({'redmine_url': user.redmine_url})
         commands = {
             "connect": connect,
             "todo": todo,
@@ -71,9 +73,9 @@ def connect(params):
 
 def todo(params):
 
-    issues = redmine.issue.filter(assigned_to_id="me",status_id=2)
+    issues = redmine.issue.filter(assigned_to_id="me",status_id=2, limit=3)
     if not issues:
-        issues = redmine.issue.filter(assigned_to_id="me",status_id='closed',limit=3)
+        issues = redmine.issue.filter(assigned_to_id="me",status_id=7,limit=3)
         if not issues:
             return JSONResponse({
                 "text": "It seems there are not issues here."
@@ -81,15 +83,35 @@ def todo(params):
     todo = []
     for issue in issues:
         todo.append({
-            "id": issue.id,
-            "subject": issue.subject,
-            "priority": issue.priority.name,
-            "tracker": issue.tracker.name,
-            "status": issue.status.name,
-            "hours": issue.estimated_hours if "estimated_hours" in dir(issue) else None,
-            "description": issue.description})
+            "pretext": "<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">"+"\n_created by "+issue.author.name+"_",
+            "title": "Description",
+            "text": issue.description,
+            "fields":[
+                {
+                    "title": "Status",
+                    "value": issue.status.name,
+                    "short": True
+                },
+                {
+                    "title": "Priority",
+                    "value": issue.priority.name,
+                    "short": True
+                },
+                {
+                    "title": "Assignee",
+                    "value": (issue.assigned_to.name if "assigned_to" in dir(issue) else "Not assigned"),
+                    "short": True
+                },
+                {
+                    "title": "Estimated hours",
+                    "value": (issue.estimated_hours if "estimated_hours" in dir(issue) else "-"),
+                    "short": True
+                },
+            ],
+            "mrkdwn_in": ["pretext", "text", "fields"]
+        })
     return JSONResponse({
-        "text": "To-Do",
+        "text": "_/redmine "+params['text']+"_",
         "attachments": todo
     })
 
@@ -103,7 +125,7 @@ def issue(params):
         })
     # If there no left options is just asking /redmine issue <id>
     if not params['options']:
-        return issue_show(params['issue_id'])
+        return issue_show(params)
     # If there are more options, lets route them
     options = {
         "status": issue_status,
@@ -123,17 +145,18 @@ def issue(params):
         })
     return options[option](params)
 
-def issue_show(pk):
+def issue_show(params):
     """
     An JSONResponse that returns an Issue.
     """
-    issue = redmine.issue.get(pk)
+    issue = redmine.issue.get(params['issue_id'])
+    for i in issue: print i
     return JSONResponse({
-        "text": "<http://redmine.smarterlith.net/issues/"+str(pk)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">",
+        "text": "_/redmine "+params['text']+"_\n"+"<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">",
         "attachments": [
             {
-
-                "title": "",
+                "title": "Description",
+                "pretext": "_created by "+issue.author.name+"_",
                 "text": issue.description,
                 "fields":[
                     {
@@ -147,11 +170,17 @@ def issue_show(pk):
                         "short": True
                     },
                     {
-                        "title": "Estimated hours",
-                        "value": (issue.estimated_hours if "estimated_hours" in issue else "-"),
+                        "title": "Assignee",
+                        "value": (issue.assigned_to.name if "assigned_to" in dir(issue) else "Not assigned"),
                         "short": True
                     },
-                ]
+                    {
+                        "title": "Estimated hours",
+                        "value": (issue.estimated_hours if "estimated_hours" in dir(issue) else "-"),
+                        "short": True
+                    },
+                ],
+                "mrkdwn_in": ["pretext", "text", "fields"]
             },
         ]
     })
@@ -161,31 +190,58 @@ def issue_status(params):
     Routes the issue status command options
     """
     if not params['options']:
-        return issue_get_status(params['issue_id'])
+        return issue_get_status(params)
 
-    return issue_set_status(params['issue_id'], params['options'][0])
+    return issue_set_status(params)
 
 
-def issue_get_status(pk):
+def issue_get_status(params):
     """
     An JSONResponse that retrun an Issie status
     """
-    issue = redmine.issue.get(pk)
+    issue = redmine.issue.get(params['issue_id'])
     return JSONResponse({
-        "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nStatus: "+issue.status.name
+        "text": "_/redmine "+params['text']+"_",
+        "attachments":[
+            {
+                "text": "<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">",
+                "fields": [
+                    {
+                        "title": "Status",
+                        "value": issue.status.name,
+                        "short": True
+                    },
+                ],
+                "mrkdwn_in": ["pretext", "text", "fields"]
+            }
+        ]
     })
 
-def issue_set_status(pk, status):
+def issue_set_status(params):
     """
     An JSONResponse that set and Issue status
     """
     statuses = redmine.issue_status.all()
     for s in statuses:
-        if status.title() == s.name:
-            issue = redmine.issue.get(pk)
+        if params['options'][0].title() == s.name:
+            issue = redmine.issue.get(params['issue_id'])
             return JSONResponse({
-                "text": issue.tracker.name+"#"+str(issue.id)+ (" Status changed to "+status.title()) if redmine.issue.update(pk,status_id=s.id) else "couldn't update the Status."
-            })
+                "text": "_/redmine "+params['text']+"_",
+                "attachments":[
+                    {
+                        "text": "<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">",
+                        "pretext": "_Status changed_" if redmine.issue.update(params['issue_id'],status_id=s.id) else "Couldn't update Issue. Sorry...",
+                        "fields": [
+                            {
+                                "title": "Status",
+                                "value": params['options'][0].title(),
+                                "short": True
+                            },
+                        ],
+                        "mrkdwn_in": ["pretext", "text", "fields"]
+                    }
+                ]
+            } )
     return JSONResponse({
         "text": status+" is not a valid Isssue Status",
         "attachments": [
@@ -197,18 +253,30 @@ def issue_set_status(pk, status):
     })
 
 
-def issue_get_priority(request, params):
+def issue_get_priority(params):
     """
     An JSONResponse that returns an Issue priority
     """
-    pk=params[1]
-    issue = redmine.issue.get(pk)
+    issue = redmine.issue.get(params['issue_id'])
     return JSONResponse({
-        "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nPriority: "+issue.priority.name
+        "text": "_/redmine "+params['text']+"_",
+        "attachments":[
+            {
+                "text": "<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">",
+                "fields": [
+                    {
+                        "title": "Priority",
+                        "value": issue.priority.name,
+                        "short": True
+                    },
+                ],
+                "mrkdwn_in": ["pretext", "text", "fields"]
+            }
+        ]
     })
 
 
-def issue_set_priority(request, params):
+def issue_set_priority(params):
     """
     An JSONResponse that returns None :D
     """
@@ -218,18 +286,30 @@ def issue_set_priority(request, params):
     return None
 
 
-def issue_get_assignee(request, params):
+def issue_get_assignee(params):
     """
     An JSONResponse that returns an Issue assignee
     """
-    pk=params[1]
-    issue = redmine.issue.get(pk)
+    issue = redmine.issue.get(params['issue_id'])
     return JSONResponse({
-        "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nAssigne: "+ (issue.assigned_to.name if "assigned_to" in dir(issue) else "Not assigned")
+        "text": "_/redmine "+params['text']+"_",
+        "attachments":[
+            {
+                "text": "<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">",
+                "fields": [
+                    {
+                        "title": "Assignee",
+                        "value": (issue.assigned_to.name if "assigned_to" in dir(issue) else "Not assigned"),
+                        "short": True
+                    },
+                ],
+                "mrkdwn_in": ["pretext", "text", "fields"]
+            }
+        ]
     })
 
 
-def issue_set_assignee(request, params):
+def issue_set_assignee(params):
     """
     An JSONResponse that return None :D
     """
@@ -239,18 +319,30 @@ def issue_set_assignee(request, params):
     return None
 
 
-def issue_get_target(request, params):
+def issue_get_target(params):
     """
     An JSONResponse that returns an Issue target
     """
-    pk=params[1]
-    issue = redmine.issue.get(pk)
+    issue = redmine.issue.get(params['issue_id'])
     return JSONResponse({
-        "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nTarget Version: "+ (issue.fixed_version.name if "fixed_version" in dir(issue) else "Not targeted")
+        "text": "_/redmine "+params['text']+"_",
+        "attachments":[
+            {
+                "text": "<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">",
+                "fields": [
+                    {
+                        "title": "Target",
+                        "value": (issue.fixed_version.name if "fixed_version" in dir(issue) else "Not targeted"),
+                        "short": True
+                    },
+                ],
+                "mrkdwn_in": ["pretext", "text", "fields"]
+            }
+        ]
     })
 
 
-def issue_set_target(request, params):
+def issue_set_target(params):
     """
     An JSONResponse that returns None :D
     """
@@ -260,137 +352,153 @@ def issue_set_target(request, params):
     return None
 
 
-def issue_get_subtasks(request, params):
+def issue_get_subtasks(params):
     """
     An JSONResponse that return an Issue subtasks
     """
-    pk=params[1]
-    issue = redmine.issue.get(pk,include='children')
+    issue = redmine.issue.get(params['issue_id'],include='children')
     if not issue.children:
         return JSONResponse({
-            "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nIt has no subtasks"
+            "text": "_/redmine "+params['text']+"_\n"+"<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">\nSubtasks: None"
         })
     subtasks = []
     for task in issue.children:
         subtasks.append({
-            "title": task.tracker.name+"#"+str(task.id)+" "+task.subject
+            "title": "<"+params['redmine_url']+"/issues/"+str(task.id)+"|"+task.tracker.name+"#"+str(task.id)+" "+task.subject+">"
         })
     return JSONResponse({
-        "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nSubtasks:",
+        "text": "_/redmine "+params['text']+"_\n"+"<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">\nSubtasks:",
         "attachments": subtasks
     })
 
-def issue_get_related(request, params):
+def issue_get_related(params):
     """
     An JSONResponse that returns an Issue related tasks
     """
-    pk=params[1]
-    issue = redmine.issue.get(pk,include='relations')
+    issue = redmine.issue.get(params['issue_id'],include='relations')
     if not issue.relations:
         return JSONResponse({
-            "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nIt has no related issues"
+            "text": "_/redmine "+params['text']+"_\n"+"<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">\nRelated Issues: None",
         })
     related = []
-    for rel in issue.relations:
-        rel = redmine.issue.get(rel.issue_to_id)
-        related.append({
-            "title": rel.tracker.name+"#"+str(rel.id),
-            "text": rel.subject
-        })
+    for relation in issue.relations:
+        if (relation.issue_to_id != int(params['issue_id'])):
+            rel = redmine.issue.get(relation.issue_to_id)
+            related.append({
+                "title": "<"+params['redmine_url']+"/issues/"+str(rel.id)+"|"+rel.tracker.name+"#"+str(rel.id)+" "+rel.subject+">"
+            })
+        else:
+            rel = redmine.issue.get(relation.issue_id)
+            related.append({
+                "title": "<"+params['redmine_url']+"/issues/"+str(rel.id)+"|"+rel.tracker.name+"#"+str(rel.id)+" "+rel.subject+">"
+            })
     return JSONResponse({
-        "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nRelated issues:",
+        "text": "_/redmine "+params['text']+"_\n"+"<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">\nRelated Issues:",
         "attachments": related
     })
 
-def issue_comments(request, params):
-    pk=params[1]
-    is_last=False
-    try:
-        opt=params[3]
-        if opt=="add":
-            try:
-                comment=" ".join(opt[4])
-            except:
-                return JSONResponse({
-                    "text": "Comment text missing!\nTry /redmine help"
-                })
-            return issue_add_comment(pk, comment)
-        elif opt=="last":
-            is_last=True
-    except:
-        return issue_get_comments(pk, is_last)
 
-def issue_get_comments(pk, is_last):
+def issue_comments(params):
+    try:
+        opt=params['options'][0]
+        # if opt=="add":
+        #     try:
+        #         comment=" ".join(opt[4])
+        #     except:
+        #         return JSONResponse({
+        #             "text": "Comment text missing!\nTry /redmine help"
+        #         })
+        #     return issue_add_comment(pk, comment)
+        # elif opt=="last":
+        if opt == "last":
+            params.update({"is_last": True})
+            return issue_get_comments(params)
+    except:
+        return issue_get_comments(params)
+
+def issue_get_comments(params):
     """
     An JSONResponse that returns an Issue comments
     """
-    issue = redmine.issue.get(pk,include='journals')
+    issue = redmine.issue.get(params['issue_id'],include='journals')
     comments = []
     for journal in issue.journals:
         if "notes" in dir(journal) and journal.notes != "":
             comments.append({
-                "title": str(journal.created_on)+" "+journal.user.name+" wrote:",
-                "text": journal.notes
+                "pretext": "_"+str(journal.created_on)+" "+journal.user.name+" wrote:_",
+                "text": journal.notes,
+                "mrkdwn_in": ["pretext", "text"]
             })
     if not comments:
         return JSONResponse({
-            "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nIt has no comments"
+            "text": "_/redmine "+params['text']+"_\n"+"<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">\nComments: None"
         })
     return JSONResponse({
-        "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nComments:",
-        "attachments": comments if not is_last else comments[-1]
+        "text": "_/redmine "+params['text']+"_\n"+"<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">\nComments:",
+        "attachments": comments if not "is_last" in params else [comments[-1]]
     })
 
 
-def issue_add_comment(pk, comment):
-    """
-    An JSONResponse that set an Issue comment
-    """
-    return JSONResponse({
-        "text": "Adding a comment is not implemented yet... Sorry! "
-    })
+# def issue_add_comment(pk, comment):
+#     """
+#     An JSONResponse that set an Issue comment
+#     """
+#     return JSONResponse({
+#         "text": "Adding a comment is not implemented yet... Sorry! "
+#     })
 
 def issue_logtime(params):
-    pk=params[1]
     try:
-        if params[3] == "add" :
-            hours=params[5]
-            for n in range(4): params.remove(params[n])
-            comment = " ".join(params)
-            issue_add_logtime(pk,hours,comment)
+        if params['options'][0] == "add":
+            params.update({"hours": params['options'][1]})
+            for n in range(2): params['options'].pop(0)
+            params.update({"comment": " ".join(params['options'])})
+            return issue_add_logtime(params)
     except:
-        issue_get_logtime(pk)
+        return issue_get_logtime(params)
 
-def issue_get_logtime(pk):
+def issue_get_logtime(params):
     """
     An JSONResponse that returns an Issue time log
     """
-    entries = redmine.time_entry.filter(issue_id=pk)
+    entries = redmine.time_entry.filter(issue_id=params['issue_id'])
     timelog = []
     for entry in entries:
         timelog.append({
-            "title": entry.user.name+" has spent "+str(entry.hours)+" hours on "+str(entry.created_on),
-            "text": entry.comments
+            "pretext": "_"+str(entry.created_on)+" "+entry.user.name+" has spent *"+str(entry.hours)+" hours:*_",
+            "text": entry.comments,
+            "mrkdwn_in": ["pretext", "text"]
         })
-    issue = redmine.issue.get(pk)
+    issue = redmine.issue.get(params['issue_id'])
     if not timelog:
         return JSONResponse({
-            "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nIt has no time entries"
+            "text": "_/redmine "+params['text']+"_\n"+"<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">\nTimelog: None",
         })
     return JSONResponse({
-        "text": issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+"\nTimelog:",
+        "text": "_/redmine "+params['text']+"_\n"+"<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">\nTimelog:",
         "attachments": timelog
     })
 
 
-def issue_add_logtime(pk, hours, comment):
+def issue_add_logtime(params):
     """
     An JSONResponse that set an Issue time log
     """
-    issue = redmine.issue.get(pk)
-    time_entry = redmine.time_entry.create(issue_id=pk, spent_on=timezone.now(), hours=hours, activity_id=9, comments=comment)
+    issue = redmine.issue.get(params['issue_id'])
+    time_entry = redmine.time_entry.create(issue_id=params['issue_id'], hours=params['hours'], activity_id=9, comments=params['comment'])
+    if not time_entry:
+        return JSONResponse({
+            "text": "_/redmine "+params['text']+"_\n"+"<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">\nCouldn't add entry",
+        })
     return JSONResponse({
-        "text": issue.tracker.name+"#"+str(issue.id)+ (" Time entry added") if time_entry else "couldn't add the time entry."
+        "text": "_/redmine "+params['text']+"_\n"+"<"+params['redmine_url']+"/issues/"+str(issue.id)+"|"+issue.tracker.name+"#"+str(issue.id)+" "+issue.subject+">\n_New Entry Time added:_",
+        "attachments": [
+            {
+                "pretext": "_"+str(time_entry.created_on)+" "+time_entry.user.name+" has spent *"+str(time_entry.hours)+" hours*:_",
+                "text": time_entry.comments,
+                "mrkdwn_in": ["pretext", "text"]
+            }
+        ]
     })
 
 def help(params = None):
@@ -398,9 +506,9 @@ def help(params = None):
     An JSONResponse that displays the command help
     """
     return JSONResponse({
-        "text": """*How to use: /redmine <command> [options]*
+        "text": """_/redmine help_\n*How to use: /redmine <command> [options]*
 
-        *Let you interact with your Redmine application.*
+        *Lets you interact with your Redmine application.*
 
         Available_commands:
 
